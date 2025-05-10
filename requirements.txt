@@ -1,1 +1,14 @@
-pywin32
+
+# Gmail API
+google-api-python-client==2.126.0
+google-auth==2.29.0
+google-auth-oauthlib==1.2.0
+google-auth-httplib2==0.2.0
+
+# Excel parsing
+pandas==2.2.2
+openpyxl==3.1.2
+
+# Optional (safe parsing/logging)
+python-dateutil>=2.8.2
+six>=1.17.0

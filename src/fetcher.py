@@ -1,61 +1,62 @@
-# src/outlook_fetcher.py
-"""
-Fetch unread Outlook messages and save any *.xls[x/m]* attachments
-into the project‑level 'gradebooks/' directory.
-"""
+# fetcher.py
+import os
+import base64
+import re
+from pathlib import Path
+from auth import authenticate_gmail
 
-import os, re
-from datetime import datetime
-import win32com.client as win32
+ATTACH_DIR = Path(__file__).resolve().parent.parent / "gradebooks"
+EXT_REGEX = re.compile(r"\.xls[xm]?$", re.I)
 
-# ---------- config ----------
-ATTACH_DIR   = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "gradebooks"))
-INBOX_FOLDER = "Inbox"        # change if you want a sub‑folder (e.g., "Grades")
-FILENAME_RE  = re.compile(r"\.xls[xm]?$", re.I)   # .xlsx, .xlsm, .xls
-# -----------------------------
-
-def ensure_dir(path: str):
+def ensure_dir(path):
     if not os.path.exists(path):
         os.makedirs(path)
 
-def save_excel_attachments():
-    outlook = win32.Dispatch("Outlook.Application").GetNamespace("MAPI")
+def list_unread_messages(service):
+    query = "is:unread has:attachment from:*@ualberta.ca" # Adjust as needed
+    # This query fetches unread emails with attachments from any @ualberta.ca address
 
-    # -------- auto‑select store --------
-    target_store = None
-    for store in outlook.Folders:
-        if "gmail" in store.Name.lower():      # tweak keyword if you ever switch accounts, can use any domain like 'ualberta'
-            target_store = store
-            break
-    if target_store is None:
-        target_store = outlook.GetDefaultFolder(6).Parent   # fallback = default store
+    response = service.users().messages().list(userId='me', q=query).execute()
+    return response.get('messages', [])
 
-    inbox = target_store.Folders["Inbox"]                   # Gmail inbox
-    print(f"Scanning store: {target_store.Name!r} → Inbox")
+def download_attachments(service, message_id):
+    message = service.users().messages().get(userId='me', id=message_id).execute()
+    payload = message.get("payload", {})
+    parts = payload.get("parts", [])
 
- 
-    items = inbox.Items.Restrict("[Unread]=true")
-    items.Sort("[ReceivedTime]", True)
+    for part in parts:
+        filename = part.get("filename")
+        if EXT_REGEX.search(filename or ""):
+            body = part.get("body", {})
+            att_id = body.get("attachmentId")
 
+            if att_id:
+                attachment = service.users().messages().attachments().get(
+                    userId='me', messageId=message_id, id=att_id).execute()
+                file_data = base64.urlsafe_b64decode(attachment['data'])
+
+                # Save to disk
+                ts = message["internalDate"]
+                save_path = ATTACH_DIR / f"{ts}_{filename}"
+                with open(save_path, 'wb') as f:
+                    f.write(file_data)
+                print(f"✔ Saved {filename} → {save_path}")
+                # Mark as read (remove UNREAD label)
+                service.users().messages().modify(
+                    userId='me',
+                    id=message_id,
+                    body={'removeLabelIds': ['UNREAD']}
+                ).execute()
+
+
+def fetch_excel_attachments():
     ensure_dir(ATTACH_DIR)
-    saved = 0
+    service = authenticate_gmail()
+    messages = list_unread_messages(service)
 
-    for item in items:
-        # Check for attachments manually
-        if item.Attachments.Count > 0:
-            print(f"Processing email: {item.Subject}")
-            for att in item.Attachments:
-                if FILENAME_RE.search(att.FileName):
-                    ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    path = os.path.join(ATTACH_DIR, f"{ts}_{att.FileName}")
-                    att.SaveAsFile(path)
-                    print(f"   ✔  {att.FileName}  →  {path}")
-                    saved += 1
-            item.Unread = False          
-
-    print(f"\nDone. {saved} file(s) saved from {target_store.Name!r}.")
-    return saved
-
+    print(f"Found {len(messages)} unread email(s) with attachments.")
+    for msg in messages:
+        download_attachments(service, msg['id'])
 
 if __name__ == "__main__":
-    save_excel_attachments()
+    fetch_excel_attachments()
